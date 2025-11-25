@@ -2,13 +2,12 @@ pipeline {
     agent any
 
     environment {
-        APP_DIR = '/opt/springapp'
-        JAR_NAME = 'clickNbuy-app.jar'
+        APP_HOME = "/opt/springapp"
+        APP_JAR  = "clickNbuy-app.jar"
     }
 
     stages {
-
-        stage('Checkout Code') {
+        stage('Checkout') {
             steps {
                 git branch: 'master',
                     url: 'https://github.com/chandu0117/clickNbuy-SpringBoot-Thymeleaf.git',
@@ -24,21 +23,30 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                sh """
-                    mkdir -p ${APP_DIR}
-                    chown jenkins:jenkins ${APP_DIR}
-                    pkill -f ${JAR_NAME} || true
-                    cp target/*.jar ${APP_DIR}/${JAR_NAME}
-                    nohup java -jar ${APP_DIR}/${JAR_NAME} > ${APP_DIR}/app.log 2>&1 &
-                """
+                // Create app directory if missing
+                sh "sudo mkdir -p ${APP_HOME}"
+                sh "sudo cp target/*.jar ${APP_HOME}/${APP_JAR}"
+                sh "sudo cp src/main/resources/application.properties ${APP_HOME}/application.properties"
             }
         }
 
-        stage('Verify') {
+        stage('Run Application') {
             steps {
-                sh 'ps -ef | grep clickNbuy-app.jar || echo "App is not running"'
-                sh 'tail -n 10 /opt/springapp/app.log || echo "No log yet"'
+                // Stop if already running
+                sh "sudo pkill -f ${APP_JAR} || true"
+                
+                // Start app in background
+                sh "nohup java -jar ${APP_HOME}/${APP_JAR} --spring.config.location=${APP_HOME}/application.properties > ${APP_HOME}/app.log 2>&1 &"
             }
+        }
+    }
+
+    post {
+        success {
+            echo "Application deployed and running on port 8085"
+        }
+        failure {
+            echo "Pipeline failed! Check logs."
         }
     }
 }
