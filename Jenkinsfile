@@ -43,7 +43,7 @@ pipeline {
 
     post {
         success {
-            echo "Application deployed and running on port 8085"
+            echo "Application deployed and running on port 8088"
         }
         failure {
             echo "Pipeline failed! Check logs."
