@@ -4,12 +4,12 @@ pipeline {
     DEPLOY_DIR = '/opt/orbstore'
     JAR_NAME = 'app.jar'
     PORT = '8088'
-    // Repo and branch are taken from job config (Pipeline script from SCM)
+    DB_WAIT_RETRIES = '12'    // 12 * 5s = 60s total wait
+    DB_WAIT_SLEEP = '5'       // seconds between checks
   }
   stages {
     stage('Checkout') {
       steps {
-        // 'checkout scm' will use the repository and credentials from job config
         checkout scm
       }
     }
@@ -21,97 +21,110 @@ pipeline {
       }
     }
 
+    stage('Prepare') {
+      steps {
+        sh '''
+          set -e
+          sudo mkdir -p ${DEPLOY_DIR}
+          sudo chown jenkins:jenkins ${DEPLOY_DIR} || true
+          sudo chmod 750 ${DEPLOY_DIR} || true
+        '''
+      }
+    }
+
     stage('Deploy') {
-      // inject DB credentials securely
       steps {
         withCredentials([
-          usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS'),
-          string(credentialsId: 'db-host', variable: 'DB_HOST'),
-          string(credentialsId: 'db-name', variable: 'DB_NAME')
+           usernamePassword(credentialsId: 'db-creds', usernameVariable: 'DB_USER', passwordVariable: 'DB_PASS'),
+           string(credentialsId: 'db-host', variable: 'DB_HOST'),
+           string(credentialsId: 'db-name', variable: 'DB_NAME')
         ]) {
           sh '''
             set -e
-            echo "Preparing deploy dir: ${DEPLOY_DIR}"
-            sudo mkdir -p ${DEPLOY_DIR}
-            sudo chown jenkins:jenkins ${DEPLOY_DIR} || true
-
-            # find built jar (ignore -original)
+            echo "Searching for built JAR..."
             JAR_FILE=$(ls target/*.jar 2>/dev/null | grep -v 'original' | head -n1 || true)
             if [ -z "$JAR_FILE" ]; then
-              echo "ERROR: No JAR found in target/"; ls -la target; exit 1
+              echo "No JAR in target/ - aborting"; ls -la target || true; exit 1
             fi
-            echo "Found JAR: $JAR_FILE"
+            echo "JAR found: $JAR_FILE"
 
-            # if port in use -> kill processes and clean deploy dir
+            # wait for DB reachable (simple TCP check)
+            if [ -n "$DB_HOST" ]; then
+              echo "Waiting for DB ${DB_HOST} (up to $((DB_WAIT_RETRIES*DB_WAIT_SLEEP))s)..."
+              tries=0
+              while ! nc -z ${DB_HOST} 3306; do
+                tries=$((tries+1))
+                if [ "$tries" -ge ${DB_WAIT_RETRIES} ]; then
+                  echo "DB at ${DB_HOST}:3306 not reachable after ${tries} tries"; exit 2
+                fi
+                echo "DB not ready - sleeping ${DB_WAIT_SLEEP}s (try ${tries}/${DB_WAIT_RETRIES})"
+                sleep ${DB_WAIT_SLEEP}
+              done
+              echo "DB reachable"
+            else
+              echo "No DB_HOST provided, will use app internal config"
+            fi
+
+            # if port in use -> kill it
             if ss -tulpn | grep -q ":${PORT}\\b"; then
-              echo "Port ${PORT} in use — killing related processes"
-              PIDS=$(ss -tulpn | awk "/:${PORT}\\b/ {print \$6}" | sed -E 's/.*pid=([0-9]+),.*/\\1/' | tr "\\n" " ")
-              echo "PIDs to kill: $PIDS"
+              echo "Port ${PORT} in use - killing previous processes"
+              PIDS=$(ss -tulpn | awk "/:${PORT}\\b/ {print \$6}" | sed -E 's/.*pid=([0-9]+),.*/\\1/' | tr "\\n" " " || true)
               for pid in $PIDS; do
-                sudo kill -9 $pid || true
+                if [ -n "$pid" ]; then
+                  echo "Killing pid $pid"; sudo kill -9 $pid || true
+                fi
               done
               echo "Cleaning ${DEPLOY_DIR}"
               sudo rm -rf ${DEPLOY_DIR}/*
             else
-              echo "Port ${PORT} not in use — fresh deploy"
+              echo "No process on ${PORT}"
             fi
 
-            # copy jar and set ownership
+            # copy jar to deploy dir
             sudo cp "$JAR_FILE" ${DEPLOY_DIR}/${JAR_NAME}
             sudo chown jenkins:jenkins ${DEPLOY_DIR}/${JAR_NAME}
+            sudo chmod 640 ${DEPLOY_DIR}/${JAR_NAME}
 
-            # build DB override string if DB_HOST/DB_NAME provided
+            # build DB overrides if provided
             DB_OVERRIDES=""
             if [ -n "${DB_HOST}" ] && [ -n "${DB_NAME}" ]; then
               DB_OVERRIDES="--spring.datasource.url=jdbc:mysql://${DB_HOST}:3306/${DB_NAME} --spring.datasource.username=${DB_USER} --spring.datasource.password=${DB_PASS}"
+              echo "DB overrides will be used"
             else
-              echo "DB_HOST or DB_NAME not provided — using app's internal configuration"
+              echo "DB overrides not provided; using internal config"
             fi
 
-            # restart logic: systemd preferred
+            # start with systemd if exists else nohup
             if [ -f /etc/systemd/system/orb-app.service ]; then
-              echo "Restarting orb-app via systemd"
+              echo "Using systemd to manage app"
               sudo systemctl daemon-reload || true
               sudo systemctl restart orb-app || sudo systemctl start orb-app
               sleep 5
-              if sudo systemctl is-active --quiet orb-app; then
-                echo "orb-app active"
-              else
-                echo "systemd start failed - journal (last 200 lines):"
-                sudo journalctl -u orb-app -n 200 --no-pager
-                exit 1
-              fi
+              sudo systemctl is-active --quiet orb-app || (echo "systemd failed - show journal"; sudo journalctl -u orb-app -n 200 --no-pager; exit 3)
             else
-              echo "Starting jar with nohup as jenkins user"
-              # kill background java already done above. Start new process with DB overrides if any
+              echo "Starting with nohup as jenkins user"
               nohup sudo -u jenkins sh -c "exec java -jar ${DEPLOY_DIR}/${JAR_NAME} --server.port=${PORT} ${DB_OVERRIDES}" > ${DEPLOY_DIR}/app.log 2>&1 &
-              sleep 6
+              sleep 8
               if ss -tulpn | grep -q ":${PORT}\\b"; then
-                echo "Application started on port ${PORT}"
+                echo "Application listening on ${PORT}"
               else
-                echo "Failed to start - show last 200 log lines:"
-                sudo -u jenkins tail -n 200 ${DEPLOY_DIR}/app.log || true
-                exit 1
+                echo "Application failed to start - tailing logs"; sudo -u jenkins tail -n 200 ${DEPLOY_DIR}/app.log || true; exit 4
               fi
             fi
+
+            echo "Deploy complete"
           '''
         } // end withCredentials
       } // end steps
     } // end Deploy
-
-    stage('Post') {
-      steps {
-        echo "Deployment stage completed."
-      }
-    }
   } // end stages
 
   post {
     success {
-      echo "Pipeline succeeded."
+      echo "Pipeline finished successfully."
     }
     failure {
-      echo "Pipeline failed — check console output and ${DEPLOY_DIR}/app.log"
+      echo "Pipeline failed - attach console and /opt/orbstore/app.log for help."
     }
   }
 }
