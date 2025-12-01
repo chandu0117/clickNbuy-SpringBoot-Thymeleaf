@@ -48,7 +48,7 @@ pipeline {
 
         stage('Prepare Deployment Directory') {
             steps {
-                echo "Ensuring deployment directory ${DEPLOY_DIR} exists and permissions are correct."
+                echo "Ensuring deployment directory ${DEPLOY_DIR} exists and permissions is correct."
                 sh '''
                     # Create directory if it doesn't exist
                     sudo mkdir -p ${DEPLOY_DIR}
@@ -74,13 +74,14 @@ pipeline {
                         exit 1 
                     fi
 
-                    # 2. Database Reachability Check (Essential Pre-Deployment Step)
+                    // FIX: Increased max retries from 12 to 24 (120 seconds total) for slow DB startup.
+                    // 2. Database Reachability Check (Essential Pre-Deployment Step)
                     echo "Checking database connection to ${DB_HOST}:3306..."
-                    tries=0; max=12
+                    tries=0; max=24
                     while ! nc -z ${DB_HOST} 3306; do
                         tries=$((tries+1))
                         if [ "$tries" -ge "$max" ]; then 
-                            echo "ERROR: Database ${DB_HOST} not reachable after $((max*5)) seconds." 
+                            echo "ERROR: Database ${DB_HOST} not reachable after $((max*5)) seconds. Please verify the DB is running and firewall rules are correct." 
                             exit 2 
                         fi
                         echo "DB not reachable (Try $tries/$max). Waiting 5s..."
