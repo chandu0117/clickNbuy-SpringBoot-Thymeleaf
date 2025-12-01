@@ -4,6 +4,12 @@
 
 pipeline {
     agent any
+    
+    // FIX: Use the 'tools' directive to ensure Maven is available on the execution agent.
+    tools {
+        // Replace 'M3' with the exact name of your Maven installation configured in Jenkins.
+        maven 'M3'
+    }
 
     environment {
         // --- Deployment Configuration ---
@@ -35,6 +41,7 @@ pipeline {
         stage('Build Project') {
             steps {
                 echo 'Building the project using Maven and skipping tests...'
+                // With the 'tools' directive above, 'mvn' should now be in the PATH.
                 sh 'mvn -B -DskipTests clean package'
             }
         }
@@ -99,8 +106,8 @@ pipeline {
 
                     # 5. Start New Application
                     echo "Starting new application as 'jenkins' user..."
-                    # 'nohup sudo -u jenkins sh -c "exec java -jar..."': The most robust way to start a background process as a specific user.
-                    # Spring Boot config is passed via command line arguments.
+                    // 'nohup sudo -u jenkins sh -c "exec java -jar..."': The most robust way to start a background process as a specific user.
+                    // Spring Boot config is passed via command line arguments.
                     nohup sudo -u jenkins sh -c "exec java -jar ${DEPLOY_DIR}/${JAR_NAME} --server.port=${PORT} --spring.datasource.url=jdbc:mysql://${DB_HOST}:3306/${DB_NAME} --spring.datasource.username=${DB_USER} --spring.datasource.password=${DB_PASS}" > ${DEPLOY_DIR}/app.log 2>&1 &
                     
                     # 6. Basic Health Check
