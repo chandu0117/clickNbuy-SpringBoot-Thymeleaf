@@ -5,10 +5,10 @@
 pipeline {
     agent any
     
-    // FIX: Use the 'tools' directive to ensure Maven is available on the execution agent.
+    // FIX: Changed the tool name from 'M3' to 'maven' as suggested by the error message.
     tools {
-        // Replace 'M3' with the exact name of your Maven installation configured in Jenkins.
-        maven 'M3'
+        // Using 'maven' as the installation name, which is often the default or suggested name.
+        maven 'maven'
     }
 
     environment {
