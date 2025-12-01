@@ -25,10 +25,9 @@ pipeline {
         stage('Checkout Private Repository') {
             steps {
                 echo "Cloning source code from the private repository..."
-                // MANDATORY CORRECTION: Replacing 'checkout scm' with explicit git step
-                // to use the required credentialsId for private repo access.
+                // FIX: Replaced the placeholder URL with the actual repository URL and changed branch to 'master'.
                 script {
-                    git branch: 'main', credentialsId: 'private-repo-ssh-key', url: 'YOUR_PRIVATE_REPO_URL_HERE'
+                    git branch: 'master', credentialsId: 'private-repo-ssh-key', url: 'https://github.com/chandu0117/clickNbuy-SpringBoot-Thymeleaf.git'
                 }
             }
         }
